@@ -1,0 +1,1054 @@
+# 🎯 Moonstock ML Strategy — Complete Blueprint
+
+## 📋 OBJECTIVE
+
+**Goal**: Prediksi probabilitas saham naik >10% dalam 20 hari setelah base close
+
+**Entry Point**: Saat base baru close (sebelum naik) ← **Early Entry**
+
+**Decision Rule**: 
+```
+IF Probability(naik >10% | features) >= threshold (e.g., 70%)
+THEN BUY
+```
+
+---
+
+## 🔍 AUDIT: yfinance Data Availability
+
+### **✅ Data SUDAH Tersedia (via yfinance)**
+
+#### 1. **Price & Volume (OHLCV)**
+```python
+ticker = yf.Ticker("BBCA.JK")
+hist = ticker.history(period="2y", interval="1d")
+# Columns: Open, High, Low, Close, Volume
+```
+**✅ Sudah dipakai** di scanner
+
+---
+
+#### 2. **Stock Info (Fundamentals)**
+```python
+info = ticker.info
+# Available data:
+{
+  'marketCap': 1234567890000,
+  'sharesOutstanding': 12345678900,
+  'floatShares': 10000000000,
+  'beta': 0.95,
+  'trailingPE': 15.5,
+  'forwardPE': 14.2,
+  'priceToBook': 3.2,
+  'dividendYield': 0.025,
+  'profitMargins': 0.35,
+  'revenueGrowth': 0.12,
+  'earningsGrowth': 0.15,
+  'returnOnEquity': 0.22,
+  'debtToEquity': 0.45,
+  'currentRatio': 1.5,
+  'quickRatio': 1.2,
+  'sector': 'Financial Services',
+  'industry': 'Banks—Regional'
+}
+```
+**⚠️ Belum dipakai** (hanya market cap & shares)
+
+**💡 HIGH VALUE untuk prediksi**:
+- `trailingPE`, `priceToBook` → Valuation
+- `profitMargins`, `returnOnEquity` → Profitability
+- `sector`, `industry` → Sector rotation effect
+
+---
+
+#### 3. **Financial Statements**
+```python
+# Quarterly financials
+ticker.quarterly_financials
+ticker.quarterly_balance_sheet
+ticker.quarterly_cashflow
+
+# Annual
+ticker.financials
+ticker.balance_sheet
+ticker.cashflow
+```
+**⚠️ Belum dipakai**
+
+**💡 MEDIUM VALUE**:
+- Revenue growth trend
+- Earnings surprise
+- Cash flow health
+
+**⚠️ CAVEAT**: Data sering delayed 1-3 bulan untuk saham Indonesia
+
+---
+
+#### 4. **Dividends & Splits**
+```python
+ticker.dividends  # Historical dividend payments
+ticker.splits     # Stock splits history
+```
+**⚠️ Belum dipakai**
+
+**💡 LOW VALUE** untuk short-term prediction (20 hari)
+
+---
+
+#### 5. **Institutional Holders** (Limited for .JK)
+```python
+ticker.institutional_holders
+ticker.major_holders
+```
+**❌ Tidak tersedia** untuk saham Indonesia di yfinance
+
+---
+
+#### 6. **Options & Earnings** (Not for .JK)
+```python
+ticker.options  # ❌ Tidak ada untuk IDX
+ticker.earnings_dates  # ❌ Limited untuk IDX
+```
+
+---
+
+### **❌ Data TIDAK Tersedia di yfinance**
+
+#### 1. **Broker Summary (Order Flow)**
+- Top broker buy/sell
+- Foreign vs domestic flow
+- Block trades
+
+**Source Alternative**: 
+- IDX website scraping
+- Bloomberg Terminal (paid)
+- RTI Business (paid)
+
+**Value**: ⭐⭐⭐⭐⭐ (Extremely High)
+
+---
+
+#### 2. **News Sentiment**
+- Company announcements
+- News articles sentiment
+
+**Source Alternative**:
+- Google News API
+- Indonesia Stock Exchange API
+- Twitter/X scraping
+
+**Value**: ⭐⭐⭐⭐ (High)
+
+---
+
+#### 3. **Analyst Ratings**
+- Buy/Sell/Hold recommendations
+- Price targets
+
+**Source Alternative**:
+- Bloomberg
+- Refinitiv
+
+**Value**: ⭐⭐⭐ (Medium, often lagging)
+
+---
+
+#### 4. **Short Interest**
+- Short ratio
+- Days to cover
+
+**Availability**: ❌ Not available for IDX
+
+---
+
+## 🎨 FEATURE ENGINEERING STRATEGY
+
+### **CURRENT Features (Already in events_training.csv)**
+
+#### ✅ Technical Features (20+)
+```python
+'close_t0', 'open_t0', 'high_t0', 'low_t0', 'volume_t0',
+'avwap_t0', 'near_avwap_pct', 'rvol_15',
+'ret_1d', 'ret_5d', 'ret_20d',
+'rsi_14', 'bb_pct_b',
+'atr14_pct', 'volatility20', 'donchian20_pos',
+'ma5_gap', 'ma20_gap', 'rvol10', 'rvol20',
+'med_value20', 'hl_spread20_pct'
+```
+
+#### ✅ Liquidity Features (6)
+```python
+'ADV20_IDR', 'ADV60_IDR', 'MedValue20_IDR',
+'%DaysValue≥Min_20D', 'Turnover20_%', 'Amihud20_(×1e-9)'
+```
+
+#### ✅ Market Context (3)
+```python
+'ihsg_ret_20d', 'ihsg_volatility20', 'ihsg_ma20_gap'
+```
+
+#### ✅ Base-Specific (3)
+```python
+'regime_t0', 'rallyflag10', 'runUpPct_at_t0'
+```
+
+**Total**: ~32 features
+
+---
+
+### **🆕 RECOMMENDED Additional Features**
+
+#### 1️⃣ **Base Quality Features** ⭐⭐⭐⭐⭐
+```python
+# Base Duration
+'base_duration_days': int(lastFinalRight - lastFinalLeft)
+# Longer base = stronger accumulation
+
+# Base Tightness
+'base_price_range_pct': (lastFinalHigh - lastFinalLow) / lastFinalClose * 100
+# Tighter range = cleaner base
+
+# Base Volume Profile
+'base_avg_rvol': mean(rvol during base period)
+'base_volume_trend': (volume_end - volume_start) / volume_start
+# Increasing volume = bullish
+
+# AVWAP Consistency
+'base_days_above_avwap': count(close > avwap during base)
+'base_days_near_avwap': count(0.5% <= dist <= 3% during base)
+# More days near AVWAP = cleaner accumulation
+```
+
+**Implementation**:
+```python
+def extract_base_features(df, t0_idx):
+    row = df.iloc[t0_idx]
+    left = int(row['lastFinalLeft'])
+    right = int(row['lastFinalRight'])
+    
+    base_segment = df.iloc[left:right+1]
+    
+    return {
+        'base_duration': len(base_segment),
+        'base_range_pct': (base_segment['High'].max() - base_segment['Low'].min()) / row['Close'] * 100,
+        'base_avg_rvol': base_segment['rvol'].mean(),
+        'base_volume_trend': (base_segment['Volume'].iloc[-1] - base_segment['Volume'].iloc[0]) / base_segment['Volume'].iloc[0]
+    }
+```
+
+---
+
+#### 2️⃣ **Fundamental Features** ⭐⭐⭐⭐
+```python
+# Valuation
+'pe_ratio': ticker.info.get('trailingPE'),
+'pb_ratio': ticker.info.get('priceToBook'),
+'ps_ratio': ticker.info.get('priceToSalesTrailing12Months'),
+
+# Profitability
+'profit_margin': ticker.info.get('profitMargins'),
+'roe': ticker.info.get('returnOnEquity'),
+'roa': ticker.info.get('returnOnAssets'),
+
+# Growth
+'revenue_growth': ticker.info.get('revenueGrowth'),
+'earnings_growth': ticker.info.get('earningsGrowth'),
+
+# Financial Health
+'debt_to_equity': ticker.info.get('debtToEquity'),
+'current_ratio': ticker.info.get('currentRatio'),
+'quick_ratio': ticker.info.get('quickRatio'),
+
+# Relative Valuation (vs sector)
+'pe_vs_sector': (pe_ratio - sector_median_pe) / sector_median_pe,
+'pb_vs_sector': (pb_ratio - sector_median_pb) / sector_median_pb
+```
+
+**Implementation**:
+```python
+def fetch_fundamental_features(ticker_str, sector_medians):
+    tk = yf.Ticker(ticker_str)
+    info = tk.info
+    
+    feats = {
+        'pe_ratio': info.get('trailingPE', np.nan),
+        'pb_ratio': info.get('priceToBook', np.nan),
+        'profit_margin': info.get('profitMargins', np.nan),
+        'roe': info.get('returnOnEquity', np.nan),
+        'revenue_growth': info.get('revenueGrowth', np.nan),
+        'debt_to_equity': info.get('debtToEquity', np.nan),
+        'sector': info.get('sector', 'Unknown')
+    }
+    
+    # Relative valuation
+    if feats['sector'] in sector_medians:
+        feats['pe_vs_sector'] = safe_divide_scalar(
+            feats['pe_ratio'] - sector_medians[feats['sector']]['pe'],
+            sector_medians[feats['sector']]['pe']
+        )
+    
+    return feats
+```
+
+---
+
+#### 3️⃣ **Advanced Technical Features** ⭐⭐⭐⭐
+```python
+# Momentum Indicators
+'macd': ema12 - ema26,
+'macd_signal': macd.ewm(span=9).mean(),
+'macd_histogram': macd - macd_signal,
+
+# Trend Strength
+'adx_14': calculate_adx(df, 14),
+'cci_20': (typical_price - sma20) / (0.015 * mean_deviation),
+
+# Volume Indicators
+'obv': on_balance_volume(df),
+'obv_ema20': obv.ewm(span=20).mean(),
+'mfi_14': money_flow_index(df, 14),
+
+# Price Pattern
+'higher_highs': count_higher_highs(df, lookback=10),
+'higher_lows': count_higher_lows(df, lookback=10),
+'consolidation_days': count_days_in_range(df, range_pct=5),
+
+# Candlestick Patterns (at base close)
+'is_hammer': detect_hammer(df.iloc[t0_idx]),
+'is_engulfing': detect_bullish_engulfing(df.iloc[t0_idx-1:t0_idx+1]),
+```
+
+---
+
+#### 4️⃣ **Market Regime Features** ⭐⭐⭐
+```python
+# Market Breadth
+'ihsg_above_ma50_pct': pct_stocks_above_ma50(all_idx_stocks),
+'ihsg_new_highs_lows_ratio': new_52w_highs / new_52w_lows,
+
+# Volatility Regime
+'vix_equivalent': ihsg_volatility_index,
+'vix_regime': 'high' if vix > 20 else 'low',
+
+# Sector Rotation
+'sector_momentum_rank': rank_sectors_by_momentum(),
+'is_sector_leading': sector_rank <= 3,
+
+# Correlation
+'correlation_to_ihsg': rolling_correlation(ticker, ihsg, window=60)
+```
+
+---
+
+#### 5️⃣ **Time-Based Features** ⭐⭐⭐
+```python
+# Calendar Effects
+'day_of_week': t0_date.weekday(),  # 0=Monday, 4=Friday
+'week_of_month': (t0_date.day - 1) // 7 + 1,
+'is_month_end': t0_date.day >= 25,
+'is_quarter_end': t0_date.month in [3, 6, 9, 12] and t0_date.day >= 25,
+
+# Seasonality
+'month': t0_date.month,
+'is_january_effect': t0_date.month == 1,
+
+# Days Since Events
+'days_since_earnings': (t0_date - last_earnings_date).days,
+'days_since_dividend': (t0_date - last_dividend_date).days
+```
+
+---
+
+#### 6️⃣ **Relative Strength Features** ⭐⭐⭐⭐
+```python
+# Price Performance vs Market
+'ret_vs_ihsg_5d': ret_5d - ihsg_ret_5d,
+'ret_vs_ihsg_20d': ret_20d - ihsg_ret_20d,
+
+# Rank in Universe
+'momentum_rank': rank_by_momentum(all_tickers),
+'volume_rank': rank_by_rvol(all_tickers),
+'volatility_rank': rank_by_volatility(all_tickers),
+
+# Percentile
+'price_percentile_52w': (close - low_52w) / (high_52w - low_52w) * 100
+```
+
+---
+
+## 📊 FEATURE PRIORITY MATRIX
+
+| Category | Examples | Priority | Effort | Value/Effort |
+|----------|----------|----------|--------|--------------|
+| **Base Quality** | Duration, Tightness, Volume Profile | ⭐⭐⭐⭐⭐ | Low | 🔥🔥🔥 |
+| **Fundamental** | PE, PB, ROE, Growth | ⭐⭐⭐⭐ | Medium | 🔥🔥 |
+| **Advanced Tech** | MACD, ADX, OBV | ⭐⭐⭐⭐ | Low | 🔥🔥🔥 |
+| **Market Regime** | Breadth, VIX, Sector | ⭐⭐⭐ | Medium | 🔥 |
+| **Time-Based** | Calendar, Seasonality | ⭐⭐⭐ | Low | 🔥🔥 |
+| **Relative Strength** | vs IHSG, Ranks | ⭐⭐⭐⭐ | Low | 🔥🔥🔥 |
+
+---
+
+## 🚀 IMPLEMENTATION ROADMAP
+
+### **Phase 1: Data Collection (Week 1-2)**
+
+#### Step 1.1: Enhance Scanner
+```python
+# Add to run_scan() function
+def fetch_enhanced_features(ticker, df, t0_idx, all_tickers_data):
+    features = {}
+    
+    # Base quality
+    features.update(extract_base_features(df, t0_idx))
+    
+    # Fundamentals (cache untuk efficiency)
+    features.update(fetch_fundamental_features(ticker))
+    
+    # Advanced technical
+    features.update(calculate_advanced_technicals(df, t0_idx))
+    
+    # Relative strength
+    features.update(calculate_relative_features(ticker, all_tickers_data, t0_idx))
+    
+    return features
+```
+
+#### Step 1.2: Run Historical Scan
+```bash
+# Collect 2+ years of data
+python moonstock_refactored.py --cli
+
+# Output: events_training.csv with 500-2000 historical base events
+```
+
+#### Step 1.3: Calculate Sector Medians
+```python
+def calculate_sector_statistics(all_events):
+    sector_groups = all_events.groupby('sector')
+    
+    return {
+        sector: {
+            'pe': group['pe_ratio'].median(),
+            'pb': group['pb_ratio'].median(),
+            'roe': group['roe'].median(),
+            'success_rate': (group['dir_label'] == 1).mean()
+        }
+        for sector, group in sector_groups
+    }
+```
+
+---
+
+### **Phase 2: ML Model Development (Week 3-4)**
+
+#### Step 2.1: Data Preprocessing
+```python
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+# Load data
+df = pd.read_csv('events_training.csv')
+
+# Filter quality events
+df = df[
+    (df['ADV20_IDR'] >= 200_000_000) &  # Liquid
+    (df['rallyflag10'] == False) &      # Not late
+    (df['dir_label'].notna())           # Has label
+]
+
+print(f"Total events: {len(df)}")
+print(f"Success rate: {(df['dir_label'] == 1).mean():.2%}")
+
+# Feature selection
+feature_cols = [
+    # Technical
+    'rvol_15', 'near_avwap_pct', 'rsi_14', 'bb_pct_b',
+    'ret_5d', 'ret_20d', 'volatility20',
+    
+    # Base quality (NEW)
+    'base_duration', 'base_range_pct', 'base_avg_rvol',
+    
+    # Fundamental (NEW)
+    'pe_ratio', 'pb_ratio', 'roe', 'revenue_growth',
+    
+    # Market context
+    'ihsg_ret_20d', 'ihsg_volatility20',
+    
+    # Liquidity
+    'ADV20_IDR', 'Turnover20_%'
+]
+
+X = df[feature_cols]
+y = df['dir_label']
+
+# Handle missing values
+X = X.fillna(X.median())
+
+# Train/test split (temporal split recommended)
+# Sort by date first
+df_sorted = df.sort_values('t0_date')
+train_size = int(len(df_sorted) * 0.8)
+
+X_train = X.iloc[:train_size]
+X_test = X.iloc[train_size:]
+y_train = y.iloc[:train_size]
+y_test = y.iloc[train_size:]
+
+# Scale features
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+```
+
+---
+
+#### Step 2.2: Model Training & Comparison
+```python
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from xgboost import XGBClassifier
+from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix
+import matplotlib.pyplot as plt
+
+models = {
+    'Logistic Regression': LogisticRegression(max_iter=1000, random_state=42),
+    'Random Forest': RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42),
+    'Gradient Boosting': GradientBoostingClassifier(n_estimators=200, learning_rate=0.1, random_state=42),
+    'XGBoost': XGBClassifier(n_estimators=200, learning_rate=0.1, max_depth=6, random_state=42)
+}
+
+results = {}
+
+for name, model in models.items():
+    print(f"\n{'='*50}")
+    print(f"Training {name}...")
+    
+    model.fit(X_train_scaled, y_train)
+    
+    # Predictions
+    y_pred = model.predict(X_test_scaled)
+    y_proba = model.predict_proba(X_test_scaled)[:, 1]
+    
+    # Metrics
+    print(classification_report(y_test, y_pred))
+    print(f"ROC-AUC: {roc_auc_score(y_test, y_proba):.4f}")
+    
+    results[name] = {
+        'model': model,
+        'accuracy': (y_pred == y_test).mean(),
+        'roc_auc': roc_auc_score(y_test, y_proba)
+    }
+
+# Select best model
+best_model_name = max(results, key=lambda k: results[k]['roc_auc'])
+best_model = results[best_model_name]['model']
+
+print(f"\n🏆 Best Model: {best_model_name}")
+print(f"   ROC-AUC: {results[best_model_name]['roc_auc']:.4f}")
+```
+
+---
+
+#### Step 2.3: Feature Importance Analysis
+```python
+import numpy as np
+
+# For tree-based models (RF, GB, XGB)
+if hasattr(best_model, 'feature_importances_'):
+    importances = best_model.feature_importances_
+    indices = np.argsort(importances)[::-1]
+    
+    print("\n📊 Top 15 Most Important Features:")
+    for i in range(min(15, len(feature_cols))):
+        idx = indices[i]
+        print(f"{i+1:2d}. {feature_cols[idx]:25s} {importances[idx]:.4f}")
+    
+    # Visualization
+    plt.figure(figsize=(10, 6))
+    plt.bar(range(15), importances[indices[:15]])
+    plt.xticks(range(15), [feature_cols[i] for i in indices[:15]], rotation=45, ha='right')
+    plt.xlabel('Feature')
+    plt.ylabel('Importance')
+    plt.title('Top 15 Feature Importances')
+    plt.tight_layout()
+    plt.savefig('feature_importance.png')
+    print("✅ Saved feature_importance.png")
+```
+
+---
+
+#### Step 2.4: Probability Calibration
+```python
+from sklearn.calibration import CalibratedClassifierCV
+
+# Calibrate probabilities
+calibrated_model = CalibratedClassifierCV(best_model, method='sigmoid', cv=5)
+calibrated_model.fit(X_train_scaled, y_train)
+
+# Test calibration
+y_proba_calibrated = calibrated_model.predict_proba(X_test_scaled)[:, 1]
+
+# Binning analysis
+bins = np.linspace(0, 1, 11)
+bin_centers = (bins[:-1] + bins[1:]) / 2
+bin_indices = np.digitize(y_proba_calibrated, bins) - 1
+
+actual_success_rate = []
+for i in range(10):
+    mask = (bin_indices == i)
+    if mask.sum() > 0:
+        actual_success_rate.append(y_test[mask].mean())
+    else:
+        actual_success_rate.append(np.nan)
+
+# Plot calibration curve
+plt.figure(figsize=(8, 6))
+plt.plot([0, 1], [0, 1], 'k--', label='Perfect Calibration')
+plt.plot(bin_centers, actual_success_rate, 'o-', label='Model')
+plt.xlabel('Predicted Probability')
+plt.ylabel('Actual Success Rate')
+plt.title('Probability Calibration Curve')
+plt.legend()
+plt.grid(True, alpha=0.3)
+plt.savefig('calibration_curve.png')
+print("✅ Saved calibration_curve.png")
+```
+
+---
+
+#### Step 2.5: Threshold Optimization
+```python
+from sklearn.metrics import precision_recall_curve
+
+# Find optimal threshold
+precision, recall, thresholds = precision_recall_curve(y_test, y_proba_calibrated)
+
+# F1 Score = 2 * (precision * recall) / (precision + recall)
+f1_scores = 2 * (precision * recall) / (precision + recall + 1e-10)
+optimal_idx = np.argmax(f1_scores)
+optimal_threshold = thresholds[optimal_idx]
+
+print(f"\n🎯 Optimal Threshold: {optimal_threshold:.3f}")
+print(f"   Precision: {precision[optimal_idx]:.3f}")
+print(f"   Recall: {recall[optimal_idx]:.3f}")
+print(f"   F1-Score: {f1_scores[optimal_idx]:.3f}")
+
+# Conservative threshold (higher precision)
+conservative_idx = np.where(precision >= 0.7)[0][0]
+conservative_threshold = thresholds[conservative_idx]
+
+print(f"\n🛡️ Conservative Threshold (70% precision): {conservative_threshold:.3f}")
+print(f"   Precision: {precision[conservative_idx]:.3f}")
+print(f"   Recall: {recall[conservative_idx]:.3f}")
+```
+
+---
+
+#### Step 2.6: Save Model
+```python
+import joblib
+import json
+
+# Save model
+joblib.dump(calibrated_model, 'moonstock_model.pkl')
+joblib.dump(scaler, 'moonstock_scaler.pkl')
+
+# Save metadata
+metadata = {
+    'model_name': best_model_name,
+    'feature_cols': feature_cols,
+    'optimal_threshold': float(optimal_threshold),
+    'conservative_threshold': float(conservative_threshold),
+    'train_date_range': [str(df_sorted['t0_date'].min()), str(df_sorted['t0_date'].max())],
+    'train_size': len(X_train),
+    'test_roc_auc': float(results[best_model_name]['roc_auc']),
+    'label_config': {
+        'target_pct': 0.10,
+        'horizon_days': 20
+    }
+}
+
+with open('moonstock_model_metadata.json', 'w') as f:
+    json.dump(metadata, f, indent=2)
+
+print("\n✅ Model saved:")
+print("   - moonstock_model.pkl")
+print("   - moonstock_scaler.pkl")
+print("   - moonstock_model_metadata.json")
+```
+
+---
+
+### **Phase 3: Production Deployment (Week 5)**
+
+#### Step 3.1: Integrate Prediction into Scanner
+```python
+# Add to moonstock_refactored.py
+
+def load_prediction_model():
+    """Load trained model for daily prediction"""
+    model = joblib.load('moonstock_model.pkl')
+    scaler = joblib.load('moonstock_scaler.pkl')
+    with open('moonstock_model_metadata.json', 'r') as f:
+        metadata = json.load(f)
+    return model, scaler, metadata
+
+def predict_success_probability(features_dict, model, scaler, metadata):
+    """Predict probability for a single base event"""
+    # Extract features in correct order
+    X = pd.DataFrame([features_dict])[metadata['feature_cols']]
+    X = X.fillna(X.median())  # Handle missing
+    
+    # Scale
+    X_scaled = scaler.transform(X)
+    
+    # Predict
+    proba = model.predict_proba(X_scaled)[0, 1]
+    
+    return proba
+```
+
+---
+
+#### Step 3.2: Enhanced Daily Scan Output
+```python
+# Modify run_scan() to add predictions
+
+# At end of ticker processing loop:
+if idx_today >= 60:
+    feats_today = build_features_t0(df_raw, idx_today, df_ihsg_raw, config)
+    
+    # Add predictions
+    if model is not None:
+        proba = predict_success_probability(feats_today, model, scaler, metadata)
+        
+        # Decision
+        threshold = metadata['conservative_threshold']  # 70% precision
+        decision = "🟢 BUY" if proba >= threshold else "⚪ WATCH"
+        
+        feats_today.update({
+            'probability': proba,
+            'decision': decision,
+            'confidence': 'high' if proba >= 0.8 else ('medium' if proba >= 0.6 else 'low')
+        })
+    
+    rows_features_today.append(feats_today)
+
+# Sort by probability descending
+features_today_df = pd.DataFrame(rows_features_today)
+features_today_df = features_today_df.sort_values('probability', ascending=False)
+
+# Save
+features_today_df.to_csv(out_feat, index=False)
+```
+
+---
+
+#### Step 3.3: Create Action Sheet
+```python
+# Add new sheet to Excel output
+
+action_df = features_today_df[
+    (features_today_df['decision'] == '🟢 BUY') &
+    (features_today_df['ADV20_IDR'] >= 200_000_000)
+].copy()
+
+action_df = action_df[[
+    'ticker', 'probability', 'confidence', 'regime_today',
+    'close_today', 'rvol_15', 'near_avwap_pct',
+    'base_duration', 'pe_ratio', 'ADV20_IDR'
+]].head(20)  # Top 20 only
+
+# Add to Excel
+with pd.ExcelWriter(out_xlsx, mode='a', engine='openpyxl') as writer:
+    action_df.to_excel(writer, sheet_name='Action_Today', index=False)
+```
+
+---
+
+## 📅 DAILY WORKFLOW
+
+### **Every Trading Day (After Market Close)**
+
+```bash
+# Step 1: Run enhanced scanner
+python moonstock_refactored.py --gui
+
+# Step 2: Open Excel output
+# → Sheet "Action_Today" shows top candidates sorted by probability
+
+# Step 3: Review top 5-10 candidates:
+# - Check chart manually (confirmation)
+# - Verify base quality visually
+# - Check news (no negative catalyst)
+
+# Step 4: Create orders for next day:
+# Entry: Close today OR open tomorrow if gap <= threshold
+# Stop Loss: Below base low (e.g., -5%)
+# Target: +10% (dapat adjust)
+# Position Size: Based on probability (higher prob = larger size)
+
+# Step 5: Monitor and log results
+# Update performance tracking sheet
+```
+
+---
+
+### **Weekly Review (Every Friday)**
+
+```python
+# Analyze weekly performance
+def weekly_review():
+    # Load last week's predictions
+    predictions = pd.read_csv('predictions_this_week.csv')
+    
+    # Load actual outcomes (after 20 days)
+    actuals = pd.read_csv('actuals_this_week.csv')
+    
+    # Calculate metrics
+    actual_success_rate = (actuals['actual_return'] >= 0.10).mean()
+    predicted_success_rate = predictions['probability'].mean()
+    
+    # Calibration check
+    print(f"Predicted Success Rate: {predicted_success_rate:.2%}")
+    print(f"Actual Success Rate: {actual_success_rate:.2%}")
+    print(f"Calibration Error: {abs(predicted_success_rate - actual_success_rate):.2%}")
+    
+    # Feature drift detection
+    for col in feature_cols:
+        train_mean = train_stats[col]['mean']
+        current_mean = predictions[col].mean()
+        drift = abs(current_mean - train_mean) / train_stats[col]['std']
+        
+        if drift > 3:  # 3 sigma threshold
+            print(f"⚠️ WARNING: Feature drift detected in {col}")
+            print(f"   Train mean: {train_mean:.4f}")
+            print(f"   Current mean: {current_mean:.4f}")
+```
+
+---
+
+### **Monthly Retraining (Every Month)**
+
+```python
+# Step 1: Collect new data (last 30 days of base events)
+new_events = pd.read_csv('events_last_30_days.csv')
+
+# Step 2: Append to training data
+all_events = pd.concat([old_training_data, new_events])
+
+# Step 3: Retrain model
+model_v2 = train_model(all_events)
+
+# Step 4: Validate on holdout set
+if validate_model(model_v2, holdout_set):
+    # Deploy new model
+    joblib.dump(model_v2, 'moonstock_model.pkl')
+    print("✅ Model updated successfully")
+else:
+    print("⚠️ New model underperforms, keeping old model")
+```
+
+---
+
+## 🎯 EXPECTED PERFORMANCE
+
+### **Baseline (Current Manual Screening)**
+- Success Rate: ~40-50% (anecdotal)
+- Precision: Unknown
+- Recall: Unknown
+
+### **Target (ML-Enhanced System)**
+- **Success Rate**: 60-70% (at conservative threshold)
+- **Precision**: 70%+ (reduce false positives)
+- **Recall**: 40-50% (trade-off with precision)
+- **ROI**: +15-20% annual (assuming proper position sizing)
+
+### **Key Metrics to Track**
+
+| Metric | Definition | Target |
+|--------|------------|--------|
+| **Hit Rate** | % of trades that reach +10% in 20 days | >60% |
+| **Avg Winner** | Average return on winning trades | >15% |
+| **Avg Loser** | Average loss on losing trades | <-5% |
+| **Win/Loss Ratio** | Avg Winner / Avg Loser | >3.0 |
+| **Sharpe Ratio** | Risk-adjusted return | >1.5 |
+| **Max Drawdown** | Largest peak-to-trough decline | <20% |
+
+---
+
+## 💡 PRO TIPS
+
+### **1. Position Sizing Based on Probability**
+```python
+def calculate_position_size(probability, account_size, risk_pct=0.02):
+    """Kelly Criterion adjusted for ML probability"""
+    # Win rate = probability
+    # Loss rate = 1 - probability
+    # Win amount = 10% (target)
+    # Loss amount = 5% (stop loss)
+    
+    win_rate = probability
+    win_amount = 0.10
+    loss_amount = 0.05
+    
+    # Kelly fraction
+    kelly = (win_rate * win_amount - (1 - win_rate) * loss_amount) / win_amount
+    
+    # Use half-Kelly for safety
+    kelly_fraction = max(0, min(kelly / 2, 0.10))  # Cap at 10%
+    
+    position_size = account_size * kelly_fraction
+    
+    return position_size
+```
+
+### **2. Ensemble with Multiple Models**
+```python
+# Train 3 different models
+models = [
+    RandomForestClassifier(),
+    XGBClassifier(),
+    LGBMClassifier()
+]
+
+# Average predictions
+ensemble_proba = np.mean([
+    model.predict_proba(X_test)[:, 1]
+    for model in models
+], axis=0)
+```
+
+### **3. Add Confidence Intervals**
+```python
+from sklearn.ensemble import RandomForestClassifier
+
+# Use tree predictions for uncertainty
+rf = RandomForestClassifier(n_estimators=100)
+rf.fit(X_train, y_train)
+
+# Get predictions from each tree
+tree_predictions = np.array([
+    tree.predict(X_test)
+    for tree in rf.estimators_
+])
+
+# Calculate confidence interval
+mean_pred = tree_predictions.mean(axis=0)
+std_pred = tree_predictions.std(axis=0)
+
+confidence_interval = (mean_pred - 1.96 * std_pred, mean_pred + 1.96 * std_pred)
+```
+
+---
+
+## ⚠️ RISKS & MITIGATION
+
+### **Risk 1: Overfitting**
+**Symptoms**: High train accuracy, low test accuracy
+
+**Mitigation**:
+- Use temporal split (not random split)
+- Cross-validation with time series split
+- Regularization (L1/L2)
+- Feature selection (remove low-importance features)
+- Early stopping
+
+### **Risk 2: Data Leakage**
+**Check**:
+- All features use data ≤ t0 only
+- No forward-looking information
+- No "future" IHSG data
+
+### **Risk 3: Market Regime Change**
+**Symptoms**: Model suddenly underperforms
+
+**Mitigation**:
+- Monitor calibration weekly
+- Retrain monthly
+- Use regime-specific models (bull vs bear)
+
+### **Risk 4: Low Liquidity Events**
+**Symptoms**: Cannot execute at predicted price
+
+**Mitigation**:
+- Filter ADV20 ≥ 200M
+- Check bid-ask spread before entry
+- Use limit orders
+
+---
+
+## 📚 NEXT STEPS (PRIORITIZED)
+
+### **Week 1-2: Data Enhancement** ⭐⭐⭐⭐⭐
+1. ✅ Add base quality features (duration, tightness, volume profile)
+2. ✅ Add fundamental features (PE, PB, ROE, growth)
+3. ✅ Run historical scan (collect 500+ events)
+
+### **Week 3: ML Development** ⭐⭐⭐⭐⭐
+4. ✅ Train multiple models (RF, XGB, LightGBM)
+5. ✅ Feature importance analysis
+6. ✅ Probability calibration
+7. ✅ Threshold optimization
+
+### **Week 4: Validation** ⭐⭐⭐⭐
+8. ✅ Walk-forward validation
+9. ✅ Paper trading simulation
+10. ✅ Performance metrics calculation
+
+### **Week 5: Production** ⭐⭐⭐⭐⭐
+11. ✅ Integrate model into scanner
+12. ✅ Create Action Sheet output
+13. ✅ Set up monitoring dashboard
+
+### **Week 6+: Continuous Improvement** ⭐⭐⭐
+14. Weekly performance review
+15. Monthly retraining
+16. Quarterly model upgrade (add new features)
+
+---
+
+## 🎓 SUMMARY
+
+**Jawaban Singkat untuk Pertanyaan Kamu:**
+
+1. **Apakah data dari yfinance sudah cukup?**
+   - ✅ **Cukup untuk MVP** (basic technical + fundamental)
+   - ⚠️ **Belum optimal** (missing broker summary, news sentiment)
+   - 💡 **Recommendation**: Mulai dengan yfinance dulu, add external data later
+
+2. **Data apa lagi yang bisa ditambah?**
+   - 🔥 **High Priority**: Base quality features (duration, tightness, volume profile)
+   - 🔥 **High Priority**: Fundamental ratios (PE, PB, ROE, growth)
+   - 🌟 **Medium Priority**: Advanced technicals (MACD, ADX, OBV)
+   - 💎 **Nice to Have**: Broker summary (butuh scraping IDX)
+
+3. **Langkah selanjutnya?**
+   ```
+   Step 1: Enhance scanner (add base quality + fundamental features)
+           ↓
+   Step 2: Run historical scan (collect 500+ base events)
+           ↓
+   Step 3: Train ML model (RandomForest/XGBoost)
+           ↓
+   Step 4: Validate & calibrate (find optimal threshold)
+           ↓
+   Step 5: Deploy for daily use (integrate predictions)
+           ↓
+   Step 6: Monitor & retrain monthly
+   ```
+
+4. **Bagaimana prediksi probabilitas?**
+   - Model outputs: `probability = 0.75` (75% chance naik >10%)
+   - Decision rule: `IF probability >= 0.70 THEN BUY`
+   - Position sizing: Higher probability = larger position
+
+**Estimasi Waktu**: 4-6 minggu dari mulai sampai production-ready
+
+**Expected ROI**: 60-70% hit rate (vs 40-50% baseline), +15-20% annual return
+
+---
+
+Mau saya bikinin **code implementation** untuk Phase 1 (enhance scanner dengan base quality + fundamental features)?
